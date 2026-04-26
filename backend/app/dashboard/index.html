@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Niscahya Knowledge Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="background-blur background-blur-a"></div>
+  <div class="background-blur background-blur-b"></div>
+
+  <main class="layout">
+    <section class="panel hero">
+      <p class="eyebrow">Niscahya AI</p>
+      <h1>Knowledge Upload Dashboard</h1>
+      <p class="subtitle">Masukkan file PDF untuk memperkaya data RAG chatbot. Setelah diunggah, konten file akan dipakai sebagai konteks jawaban.</p>
+      <div class="status-row">
+        <div class="stat">
+          <span class="stat-label">Model Status</span>
+          <span class="stat-value" id="model-status">Ready</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Documents Indexed</span>
+          <span class="stat-value" id="doc-count">0</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel upload-panel">
+      <h2>Upload PDF</h2>
+      <p class="hint">Maksimal 10 file per upload, ukuran tiap file sampai 10 MB.</p>
+
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept=".pdf" multiple>
+        <div class="dropzone-content">
+          <strong>Tarik & lepas file PDF di sini</strong>
+          <span>atau klik untuk pilih file</span>
+        </div>
+      </label>
+
+      <ul id="selected-files" class="selected-files"></ul>
+
+      <div class="actions">
+        <button id="upload-btn" class="btn btn-primary" disabled>Upload ke Knowledge Base</button>
+        <button id="clear-btn" class="btn btn-ghost" disabled>Bersihkan Pilihan</button>
+      </div>
+
+      <p id="upload-message" class="upload-message"></p>
+    </section>
+
+    <section class="panel docs-panel">
+      <div class="docs-head">
+        <h2>Indexed Documents</h2>
+        <button id="refresh-btn" class="btn btn-ghost">Refresh</button>
+      </div>
+      <div id="docs-list" class="docs-list"></div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
