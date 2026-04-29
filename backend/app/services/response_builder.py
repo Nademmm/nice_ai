@@ -6,9 +6,9 @@ class RuleBasedResponseBuilder:
     """Build natural responses from context documents dengan smart semantic matching."""
     
     # Similarity threshold - jangan ambil dokumen yang distance-nya terlalu jauh
-    # Chroma distance: 0 = perfect match, 1 = completely irrelevant
-    # 0.8 allows docs with distance up to 0.8 (more lenient)
-    SIMILARITY_THRESHOLD = 0.8
+    # Chroma distance: 0 = perfect match, 2 = completely irrelevant
+    # 1.5 allows relevant semantic matches (optimal for sentence-transformers)
+    SIMILARITY_THRESHOLD = 1.5
 
     @staticmethod
     def filter_docs_by_type(docs: List[Dict], doc_type: str) -> List[Dict]:
@@ -168,6 +168,11 @@ class RuleBasedResponseBuilder:
                 "Maaf, saat ini saya tidak menemukan informasi yang relevan. "
                 "Silakan hubungi tim kami untuk bantuan lebih lanjut."
             )
+        
+        # Prioritize uploaded knowledge from PDFs
+        uploaded_docs = [d for d in docs if d.get('metadata', {}).get('type') == 'uploaded_knowledge']
+        if uploaded_docs:
+            docs = uploaded_docs
         
         if intent == "product_recommendation":
             return RuleBasedResponseBuilder.build_product_recommendation(docs, user_input)

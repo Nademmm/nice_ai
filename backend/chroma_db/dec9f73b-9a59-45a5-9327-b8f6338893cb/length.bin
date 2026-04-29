@@ -1,3 +1,0 @@
-invalid type: string "Produk: PJUTS 80W\nSpesifikasi:\n- Watt: 80W\n- Battery: 40Ah LiFePO4\n- Tinggi Tiang: 6-7 meter\n- Cocok untuk: jalan protokol, jalan kota, main street, industrial area kecil\n- Durasi Penerangan: 12-14 jam\n- Area Coverage: Optimal untuk area 400-500m persegi dengan coverage luas", expected f64>
-          <a:effectLst>
-            <a:outerShdw blurRad="40000" dist="23000" d

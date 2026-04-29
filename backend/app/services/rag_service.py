@@ -1,6 +1,10 @@
 from typing import Dict, List, Optional
 from app.services.vector_store import vector_store
 from app.services.llm_service import llm_service
+import os
+import PyPDF2
+import io
+from pathlib import Path
 
 
 COMPANY_INFO = """
@@ -129,9 +133,56 @@ class RAGService:
         self.vector_store = vector_store
         self.llm = llm_service
 
+    def load_pdf_from_uploads(self):
+        """Load semua PDF dari folder uploads dan add ke vector store."""
+        uploads_dir = Path("./uploads")
+        if not uploads_dir.exists():
+            print("[INIT] No uploads directory found")
+            return 0
+        
+        pdf_count = 0
+        for pdf_file in uploads_dir.glob("*.pdf"):
+            try:
+                print(f"[INIT] Loading PDF: {pdf_file.name}")
+                with open(pdf_file, 'rb') as f:
+                    pdf_reader = PyPDF2.PdfReader(f)
+                    text = ""
+                    for page_num, page in enumerate(pdf_reader.pages):
+                        text += f"\n--- Page {page_num + 1} ---\n"
+                        text += page.extract_text()
+                    
+                    if text.strip():
+                        self.vector_store.add_document(
+                            text=text,
+                            metadata={
+                                "type": "uploaded_knowledge",
+                                "source": pdf_file.name,
+                                "file_type": "pdf"
+                            },
+                            document_id=f"pdf_{pdf_file.stem.replace(' ', '_')}"
+                        )
+                        pdf_count += 1
+                        print(f"[INIT] Loaded {pdf_file.name}")
+            except Exception as e:
+                print(f"[INIT] Error loading {pdf_file.name}: {str(e)}")
+        
+        return pdf_count
+        
+        return pdf_count
+
     def initialize_default_knowledge(self):
+        # First, try to load PDFs from uploads folder
+        print("[INIT] Starting knowledge base initialization...")
+        pdf_count = self.load_pdf_from_uploads()
+        
+        if pdf_count > 0:
+            print(f"[INIT] Loaded {pdf_count} PDF files from uploads folder!")
+            print(f"[INIT] Total docs in vector store: {self.vector_store.count_documents()}")
+            return
+        
+        # If no PDFs found, load default knowledge base
         if self.vector_store.count_documents() == 0:
-            print("[INIT] Starting knowledge base initialization...")
+            print("[INIT] No PDFs found. Loading default knowledge base...")
             self.vector_store.add_document(
                 text=COMPANY_INFO,
                 metadata={"type": "company_info", "source": "default"},
@@ -253,9 +304,9 @@ class RAGService:
         
         Filter out low-relevance docs (distance > threshold) sebelum return.
         """
-        # Similarity threshold - Chroma distance 0-1, semakin kecil = lebih relevan
-        # 0.8 allows more docs to pass through filtering (lenient)
-        SIMILARITY_THRESHOLD = 0.8
+        # Similarity threshold - Chroma distance 0-2, semakin kecil = lebih relevan
+        # 1.5 allows relevant semantic matches (optimal for sentence-transformers)
+        SIMILARITY_THRESHOLD = 1.5
         
         # Intent-to-type mapping
         intent_types = {
