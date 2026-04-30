@@ -5,11 +5,36 @@ from sentence_transformers import SentenceTransformer
 from app.core.config import settings
 from typing import List, Dict, Optional
 import json
+import hashlib
 
 
 class VectorStoreService:
     def __init__(self):
-        self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+        # Try to load embedding model with fallback for network issues
+        try:
+            print(f"[VectorStore] Loading embedding model: {settings.EMBEDDING_MODEL}")
+            self.embedding_model = SentenceTransformer(
+                settings.EMBEDDING_MODEL,
+                trust_remote_code=True
+            )
+            print("[VectorStore] Embedding model loaded successfully")
+        except Exception as e:
+            print(f"[VectorStore] Warning: Failed to load embedding model: {str(e)}")
+            print("[VectorStore] Falling back to local model or cached version...")
+            try:
+                # Try with cache_folder to use local cache
+                cache_folder = "./model_cache"
+                os.makedirs(cache_folder, exist_ok=True)
+                self.embedding_model = SentenceTransformer(
+                    settings.EMBEDDING_MODEL,
+                    cache_folder=cache_folder,
+                    trust_remote_code=True
+                )
+                print("[VectorStore] Embedding model loaded from cache")
+            except Exception as e2:
+                print(f"[VectorStore] Error: Still failed to load model: {str(e2)}")
+                raise
+        
         self.chroma_client = chromadb.PersistentClient(
             path=settings.CHROMA_PERSIST_DIRECTORY,
             settings=ChromaSettings(anonymized_telemetry=False)

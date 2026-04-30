@@ -146,27 +146,25 @@ class RAGService:
                 print(f"[INIT] Loading PDF: {pdf_file.name}")
                 with open(pdf_file, 'rb') as f:
                     pdf_reader = PyPDF2.PdfReader(f)
-                    text = ""
+                    # Simpan setiap halaman sebagai dokumen terpisah
                     for page_num, page in enumerate(pdf_reader.pages):
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page.extract_text()
-                    
-                    if text.strip():
-                        self.vector_store.add_document(
-                            text=text,
-                            metadata={
-                                "type": "uploaded_knowledge",
-                                "source": pdf_file.name,
-                                "file_type": "pdf"
-                            },
-                            document_id=f"pdf_{pdf_file.stem.replace(' ', '_')}"
-                        )
-                        pdf_count += 1
-                        print(f"[INIT] Loaded {pdf_file.name}")
+                        text = page.extract_text()
+                        
+                        if text.strip():
+                            self.vector_store.add_document(
+                                text=text,
+                                metadata={
+                                    "type": "uploaded_knowledge",
+                                    "source": pdf_file.name,
+                                    "file_type": "pdf",
+                                    "page": page_num + 1
+                                },
+                                document_id=f"pdf_{pdf_file.stem.replace(' ', '_')}_page_{page_num + 1}"
+                            )
+                            pdf_count += 1
+                    print(f"[INIT] Loaded {pdf_file.name} ({len(pdf_reader.pages)} pages)")
             except Exception as e:
                 print(f"[INIT] Error loading {pdf_file.name}: {str(e)}")
-        
-        return pdf_count
         
         return pdf_count
 
@@ -268,7 +266,7 @@ class RAGService:
         intent = IntentDetector.detect(message)
 
         # Search context dengan distance score
-        context_docs = self.vector_store.search(message, n_results=5)
+        context_docs = self.vector_store.search(message, n_results=10)
         
         # Re-rank dokumen: prioritize by type relevance + distance
         context_docs = self._rank_documents_by_intent(context_docs, intent)
@@ -301,47 +299,58 @@ class RAGService:
 
     def _rank_documents_by_intent(self, docs: List[Dict], intent: str) -> List[Dict]:
         """Re-rank dokumen berdasarkan intent + distance untuk relevance lebih tinggi.
+        Prioritize uploaded knowledge dari PDF.
         
         Filter out low-relevance docs (distance > threshold) sebelum return.
         """
         # Similarity threshold - Chroma distance 0-2, semakin kecil = lebih relevan
-        # 1.5 allows relevant semantic matches (optimal for sentence-transformers)
+        # 1.5 improves recall for short user queries while remaining reasonably precise
         SIMILARITY_THRESHOLD = 1.5
+        
+        # Separate uploaded vs default knowledge
+        uploaded_docs = [d for d in docs if d.get('metadata', {}).get('type') == 'uploaded_knowledge']
+        other_docs = [d for d in docs if d.get('metadata', {}).get('type') != 'uploaded_knowledge']
         
         # Intent-to-type mapping
         intent_types = {
-            "company_info": ["company_info"],
-            "product_recommendation": ["product"],
-            "faq": ["faq"],
-            "lead": ["product", "company_info"],
-            "general": ["product", "company_info", "faq"]
+            "company_info": ["company_info", "uploaded_knowledge"],
+            "product_recommendation": ["product", "uploaded_knowledge"],
+            "faq": ["faq", "uploaded_knowledge"],
+            "lead": ["product", "company_info", "uploaded_knowledge"],
+            "general": ["product", "company_info", "faq", "uploaded_knowledge"]
         }
 
         target_types = intent_types.get(intent, [])
         
-        # Separate docs by type relevance + filter by similarity threshold
-        relevant_docs = []
-        other_docs = []
+        # Process uploaded docs first with lenient filtering
+        ranked_uploaded = []
+        for doc in uploaded_docs:
+            distance = doc.get("distance", 999)
+            # Less strict filtering for uploaded knowledge
+            if distance <= SIMILARITY_THRESHOLD + 0.4:  # More lenient
+                ranked_uploaded.append((0, distance, doc))  # Priority 0 = highest
         
-        for doc in docs:
+        # Process other docs
+        ranked_other = []
+        for doc in other_docs:
             distance = doc.get("distance", 999)
             
-            # Skip jika distance terlalu jauh (tidak cukup relevan)
+            # Skip jika distance terlalu jauh
             if distance > SIMILARITY_THRESHOLD:
                 continue
             
             doc_type = doc.get("metadata", {}).get("type", "general")
             if doc_type in target_types:
-                relevant_docs.append((0, doc))  # Priority 0 = high
+                ranked_other.append((1, distance, doc))  # Priority 1 = medium
             else:
-                other_docs.append((1, doc))     # Priority 1 = low
+                ranked_other.append((2, distance, doc))  # Priority 2 = low
 
-        # Sort by priority lalu by distance
-        relevant_docs.sort(key=lambda x: x[1].get("distance", 999))
-        other_docs.sort(key=lambda x: x[1].get("distance", 999))
+        # Sort by priority then by distance
+        all_ranked = ranked_uploaded + ranked_other
+        all_ranked.sort(key=lambda x: (x[0], x[1]))
         
-        # Combine: relevant docs dulu, kemudian others
-        ranked = [doc for _, doc in relevant_docs] + [doc for _, doc in other_docs]
+        # Return docs only (drop priority and distance tuples)
+        ranked = [doc for _, _, doc in all_ranked]
         return ranked[:5]  # Return max 5
 
 

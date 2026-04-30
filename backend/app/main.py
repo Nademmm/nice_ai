@@ -14,8 +14,19 @@ from app.services.rag_service import rag_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create tables
     Base.metadata.create_all(bind=engine)
-    rag_service.initialize_default_knowledge()
+    # Initialize knowledge base (runs in background)
+    import threading
+    def load_kb():
+        try:
+            rag_service.initialize_default_knowledge()
+            print("[LIFESPAN] Knowledge base initialized successfully")
+        except Exception as e:
+            print(f"[LIFESPAN] Error initializing knowledge base: {str(e)}")
+    
+    kb_thread = threading.Thread(target=load_kb, daemon=True)
+    kb_thread.start()
     yield
 
 

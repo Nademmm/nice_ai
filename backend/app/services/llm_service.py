@@ -24,12 +24,19 @@ class LLMService:
         context_docs: Optional[List[Dict]] = None,
         user_input: str = ""
     ) -> str:
+        docs = context_docs or []
+
+        # Jawaban harus selalu grounded ke dokumen yang sudah diretrieve.
+        # Ini mencegah model menjawab generik atau berhalusinasi saat konteks tersedia.
+        if docs:
+            return self._generate_rule_based_response(intent, docs, user_input)
+
         if self.use_ai_model and self.provider == "gemini" and settings.GOOGLE_API_KEY:
             return await self._generate_gemini(prompt, system_instruction)
         elif self.use_ai_model and settings.OPENAI_API_KEY:
             return await self._generate_openai(prompt, system_instruction)
-        else:
-            return self._generate_rule_based_response(intent, context_docs or [], user_input)
+
+        return self._generate_rule_based_response(intent, docs, user_input)
 
     async def _generate_gemini(
         self,
