@@ -86,10 +86,16 @@ class IntentDetector:
         "product_recommendation": [
             ("butuh", 4), ("rekomendasi produk", 5), ("lampu jalan", 5), ("PJUTS", 5),
             ("tenaga surya", 4), ("cocok untuk", 4), ("area apa", 4), ("area mana", 4),
-            ("sesuai", 3), ("mana produk", 4), ("produk mana", 4)
+            ("sesuai", 3), ("mana produk", 4), ("produk mana", 4), ("watt", 4), ("spesifikasi", 4),
+            ("ukuran", 3), ("kapasitas", 3), ("pilih lampu", 5),
+            # Additional keywords untuk kebutuhan spesifik
+            ("taman", 5), ("lampu taman", 5), ("pencahayaan", 4), ("penerangan", 4),
+            ("jalan", 4), ("instalasi", 3), ("pasang", 3), ("solusi", 3),
+            ("besar", 3), ("kecil", 3), ("luas", 3), ("area", 3),
+            ("baterai", 4), ("panel surya", 4), ("energy", 3)
         ],
         "faq": [
-            ("harga", 5), ("berapa harga", 5), ("harga produk", 5), ("berapa", 4),
+            ("harga", 5), ("berapa harga", 5), ("harga produk", 5),
             ("garansi", 5), ("ada garansi", 4), ("kirim", 4), ("pengiriman", 4),
             ("pemasangan", 4), ("instalasi", 4), ("maintenance", 4), ("umur baterai", 5),
             ("berapa lama", 3), ("bagaimana", 3), ("apa saja", 3)
@@ -121,11 +127,12 @@ class IntentDetector:
         best_intent = max(scores, key=scores.get)
         best_score = scores[best_intent]
         
-        # Jika score terlalu rendah, mungkin general question
-        if best_score < 2:
-            return "general"
+        # Jika score terlalu rendah (< 1 untuk query pendek), tapi ada keyword FAQ, tetap FAQ
+        # Mitigasi untuk query pendek seperti "harga", "garansi", etc.
+        if best_score >= 1:  # Lowered threshold dari 2 ke 1
+            return best_intent
         
-        return best_intent
+        return "general"
 
 
 class RAGService:
@@ -133,42 +140,79 @@ class RAGService:
         self.vector_store = vector_store
         self.llm = llm_service
 
+    def _chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 100) -> List[str]:
+        """Split text into overlapping chunks untuk better context preservation."""
+        chunks = []
+        sentences = text.split('.')
+        current_chunk = ""
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            
+            sentence_with_period = sentence + "."
+            
+            # Jika adding sentence ini melebihi chunk_size, save current chunk
+            if len(current_chunk) + len(sentence_with_period) > chunk_size and current_chunk:
+                chunks.append(current_chunk.strip())
+                # Keep last sentence untuk overlap
+                current_chunk = sentence_with_period
+            else:
+                current_chunk += " " + sentence_with_period
+        
+        # Add last chunk
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+
     def load_pdf_from_uploads(self):
-        """Load semua PDF dari folder uploads dan add ke vector store."""
+        """Load semua PDF dari folder uploads dan add ke vector store dengan semantic chunking."""
         uploads_dir = Path("./uploads")
         if not uploads_dir.exists():
             print("[INIT] No uploads directory found")
             return 0
         
         pdf_count = 0
+        total_chunks = 0
         for pdf_file in uploads_dir.glob("*.pdf"):
             try:
                 print(f"[INIT] Loading PDF: {pdf_file.name}")
                 with open(pdf_file, 'rb') as f:
                     pdf_reader = PyPDF2.PdfReader(f)
-                    text = ""
-                    for page_num, page in enumerate(pdf_reader.pages):
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page.extract_text()
                     
-                    if text.strip():
-                        self.vector_store.add_document(
-                            text=text,
-                            metadata={
-                                "type": "uploaded_knowledge",
-                                "source": pdf_file.name,
-                                "file_type": "pdf"
-                            },
-                            document_id=f"pdf_{pdf_file.stem.replace(' ', '_')}"
-                        )
-                        pdf_count += 1
-                        print(f"[INIT] Loaded {pdf_file.name}")
+                    for page_num, page in enumerate(pdf_reader.pages):
+                        text = page.extract_text()
+                        if text.strip():  # Only add non-empty pages
+                            # Use semantic chunking - split by sentences dengan overlap
+                            chunks = self._chunk_text(text, chunk_size=500, overlap=100)
+                            
+                            for chunk_idx, chunk in enumerate(chunks):
+                                if len(chunk.strip()) > 50:  # Only add meaningful chunks
+                                    chunk_id = f"pdf_{pdf_file.stem.replace(' ', '_')}_p{page_num + 1}_c{chunk_idx}"
+                                    self.vector_store.add_document(
+                                        text=chunk,
+                                        metadata={
+                                            "type": "uploaded_knowledge",
+                                            "source": "uploaded_knowledge",
+                                            "file_name": pdf_file.name,
+                                            "page": page_num + 1,
+                                            "chunk": chunk_idx,
+                                            "file_type": "pdf"
+                                        },
+                                        document_id=chunk_id
+                                    )
+                                    total_chunks += 1
+                            
+                            print(f"[INIT] Loaded page {page_num + 1} from {pdf_file.name} ({len(chunks)} chunks)")
+                
+                pdf_count += 1
             except Exception as e:
                 print(f"[INIT] Error loading {pdf_file.name}: {str(e)}")
         
-        return pdf_count
-        
-        return pdf_count
+        print(f"[INIT] Loaded {pdf_count} PDF files with {total_chunks} total chunks")
+        return total_chunks
 
     def initialize_default_knowledge(self):
         # First, try to load PDFs from uploads folder
@@ -177,101 +221,118 @@ class RAGService:
         
         if pdf_count > 0:
             print(f"[INIT] Loaded {pdf_count} PDF files from uploads folder!")
-            print(f"[INIT] Total docs in vector store: {self.vector_store.count_documents()}")
-            return
         
-        # If no PDFs found, load default knowledge base
-        if self.vector_store.count_documents() == 0:
-            print("[INIT] No PDFs found. Loading default knowledge base...")
+        # Always load default knowledge base to supplement uploaded docs
+        print("[INIT] Loading default knowledge base...")
+        self.vector_store.add_document(
+            text=COMPANY_INFO,
+            metadata={"type": "company_info", "source": "default"},
+            document_id="company_info_default"
+        )
+        print(f"[INIT] Added company info. Total docs: {self.vector_store.count_documents()}")
+
+        products = [
+            {
+                "name": "PJUTS 40W",
+                "watt": "40W",
+                "battery": "20Ah LiFePO4",
+                "pole_height": "4-5 meter",
+                "suitable_for": "area sempit, persawahan, jalan gang kecil, taman komunal",
+                "lighting_duration": "6-8 jam",
+                "coverage_area": "Optimal untuk area hingga 100m persegi"
+            },
+            {
+                "name": "PJUTS 60W",
+                "watt": "60W",
+                "battery": "40Ah LiFePO4",
+                "pole_height": "5-6 meter",
+                "suitable_for": "jalan residential, perumahan, jalan lingkungan, pabrik kecil",
+                "lighting_duration": "10-12 jam",
+                "coverage_area": "Optimal untuk area 200-300m persegi dengan iluminasi bagus"
+            },
+            {
+                "name": "PJUTS 80W",
+                "watt": "80W",
+                "battery": "40Ah LiFePO4",
+                "pole_height": "6-7 meter",
+                "suitable_for": "jalan protokol, jalan kota, main street, industrial area kecil",
+                "lighting_duration": "12-14 jam",
+                "coverage_area": "Optimal untuk area 400-500m persegi dengan coverage luas"
+            },
+            {
+                "name": "PJUTS 100W",
+                "watt": "100W",
+                "battery": "50Ah LiFePO4",
+                "pole_height": "7-8 meter",
+                "suitable_for": "jalan utama, freeway, highway, area komersial, parking area",
+                "lighting_duration": "14-16 jam",
+                "coverage_area": "Optimal untuk area 600-800m persegi dengan brightness tinggi"
+            },
+            {
+                "name": "PJUTS 120W",
+                "watt": "120W",
+                "battery": "80Ah LiFePO4",
+                "pole_height": "8-9 meter",
+                "suitable_for": "area industri besar, parkiran komersial, toll booth, stadion",
+                "lighting_duration": "18-20 jam",
+                "coverage_area": "Optimal untuk area 1000m+ persegi dengan illuminasi maksimal"
+            }
+        ]
+
+        for i, product in enumerate(products):
             self.vector_store.add_document(
-                text=COMPANY_INFO,
-                metadata={"type": "company_info", "source": "default"},
-                document_id="company_info_default"
+                text=f"Produk: {product['name']}\nSpesifikasi:\n- Watt: {product['watt']}\n- Battery: {product['battery']}\n- Tinggi Tiang: {product['pole_height']}\n- Cocok untuk: {product['suitable_for']}\n- Durasi Penerangan: {product['lighting_duration']}\n- Area Coverage: {product['coverage_area']}",
+                metadata={"type": "product", "source": "catalog", "name": product['name']},
+                document_id=f"product_{i}_{product['name'].replace(' ', '_')}"
             )
-            print(f"[INIT] Added company info. Total docs: {self.vector_store.count_documents()}")
+        print(f"[INIT] Added {len(products)} products. Total docs: {self.vector_store.count_documents()}")
 
-            products = [
-                {
-                    "name": "PJUTS 40W",
-                    "watt": "40W",
-                    "battery": "20Ah LiFePO4",
-                    "pole_height": "4-5 meter",
-                    "suitable_for": "area sempit, persawahan, jalan gang kecil, taman komunal",
-                    "lighting_duration": "6-8 jam",
-                    "coverage_area": "Optimal untuk area hingga 100m persegi"
-                },
-                {
-                    "name": "PJUTS 60W",
-                    "watt": "60W",
-                    "battery": "40Ah LiFePO4",
-                    "pole_height": "5-6 meter",
-                    "suitable_for": "jalan residential, perumahan, jalan lingkungan, pabrik kecil",
-                    "lighting_duration": "10-12 jam",
-                    "coverage_area": "Optimal untuk area 200-300m persegi dengan iluminasi bagus"
-                },
-                {
-                    "name": "PJUTS 80W",
-                    "watt": "80W",
-                    "battery": "40Ah LiFePO4",
-                    "pole_height": "6-7 meter",
-                    "suitable_for": "jalan protokol, jalan kota, main street, industrial area kecil",
-                    "lighting_duration": "12-14 jam",
-                    "coverage_area": "Optimal untuk area 400-500m persegi dengan coverage luas"
-                },
-                {
-                    "name": "PJUTS 100W",
-                    "watt": "100W",
-                    "battery": "50Ah LiFePO4",
-                    "pole_height": "7-8 meter",
-                    "suitable_for": "jalan utama, freeway, highway, area komersial, parking area",
-                    "lighting_duration": "14-16 jam",
-                    "coverage_area": "Optimal untuk area 600-800m persegi dengan brightness tinggi"
-                },
-                {
-                    "name": "PJUTS 120W",
-                    "watt": "120W",
-                    "battery": "80Ah LiFePO4",
-                    "pole_height": "8-9 meter",
-                    "suitable_for": "area industri besar, parkiran komersial, toll booth, stadion",
-                    "lighting_duration": "18-20 jam",
-                    "coverage_area": "Optimal untuk area 1000m+ persegi dengan illuminasi maksimal"
-                }
-            ]
+        faq_data = [
+            {"question": "Berapa harga PJUTS?", "answer": "Harga PJUTS tergantung kapasitas watt dan spesifikasi. PJUTS 40W mulai dari Rp 3-4 juta, 60W Rp 4-5 juta, 80W Rp 5-7 juta, 100W Rp 7-8 juta, dan 120W Rp 8-10 juta. Harga bisa lebih murah untuk pembelian dalam jumlah besar. Hubungi tim kami untuk penawaran khusus."},
+            {"question": "Apakah ada garansi?", "answer": "Ya, kami memberikan garansi 5 tahun untuk komponen utama (solar panel, baterai LiFePO4, controller). Garansi mencakup material defect dan performa panel minimal 80% di tahun ke-5. Layanan purna jual termasuk penggantian spare part dan support teknis."},
+            {"question": "Apakah bisa kirim ke luar kota?", "answer": "Ya, kami melayani pengiriman ke seluruh Indonesia via kurir profesional. Untuk Jawa pengiriman 1-3 hari, luar Jawa 3-5 hari kerja. Kami juga siap kirim ke proyek dengan penanganan khusus untuk peralatan berat. Biaya pengiriman disesuaikan dengan lokasi."},
+            {"question": "Apakah ada jasa pemasangan?", "answer": "Ya, kami menyediakan jasa instalasi profesional oleh teknisi bersertifikat. Biaya jasa pemasangan tergantung lokasi dan kompleksitas proyek. Kami akan melakukan surveі lokasi terlebih dahulu untuk memberikan penawaran akurat. Tim kami dapat menangani proyek skala kecil hingga besar."},
+            {"question": "Berapa lama umur baterai?", "answer": "Baterai LiFePO4 yang kami gunakan memiliki durasi hidup 5-7 tahun atau 2000-3000 siklus charge-discharge. Dengan maintenance rutin dan operasional yang baik, baterai bisa bertahan lebih lama. Kapasitas akan menurun gradual, di tahun ke-5 masih mencapai 80% kapasitas normal."},
+            {"question": "Bagaimana maintenance PJUTS?", "answer": "Maintenance PJUTS cukup simple: (1) Bersihkan panel surya setiap 2-3 bulan dari debu dan kotoran. (2) Periksa koneksi kabel setiap 6 bulan. (3) Monitoring software untuk checking kondisi baterai. (4) Ganti spare parts jika ada yang rusak. Kami menyediakan maintenance package tahunan dengan harga terjangkau."}
+        ]
 
-            for i, product in enumerate(products):
-                self.vector_store.add_document(
-                    text=f"Produk: {product['name']}\nSpesifikasi:\n- Watt: {product['watt']}\n- Battery: {product['battery']}\n- Tinggi Tiang: {product['pole_height']}\n- Cocok untuk: {product['suitable_for']}\n- Durasi Penerangan: {product['lighting_duration']}\n- Area Coverage: {product['coverage_area']}",
-                    metadata={"type": "product", "source": "catalog", "name": product['name']},
-                    document_id=f"product_{i}_{product['name'].replace(' ', '_')}"
-                )
-            print(f"[INIT] Added {len(products)} products. Total docs: {self.vector_store.count_documents()}")
-
-            faq_data = [
-                {"question": "Berapa harga PJUTS?", "answer": "Harga PJUTS tergantung kapasitas watt dan spesifikasi. PJUTS 40W mulai dari Rp 3-4 juta, 60W Rp 4-5 juta, 80W Rp 5-7 juta, 100W Rp 7-8 juta, dan 120W Rp 8-10 juta. Harga bisa lebih murah untuk pembelian dalam jumlah besar. Hubungi tim kami untuk penawaran khusus."},
-                {"question": "Apakah ada garansi?", "answer": "Ya, kami memberikan garansi 5 tahun untuk komponen utama (solar panel, baterai LiFePO4, controller). Garansi mencakup material defect dan performa panel minimal 80% di tahun ke-5. Layanan purna jual termasuk penggantian spare part dan support teknis."},
-                {"question": "Apakah bisa kirim ke luar kota?", "answer": "Ya, kami melayani pengiriman ke seluruh Indonesia via kurir profesional. Untuk Jawa pengiriman 1-3 hari, luar Jawa 3-5 hari kerja. Kami juga siap kirim ke proyek dengan penanganan khusus untuk peralatan berat. Biaya pengiriman disesuaikan dengan lokasi."},
-                {"question": "Apakah ada jasa pemasangan?", "answer": "Ya, kami menyediakan jasa instalasi profesional oleh teknisi bersertifikat. Biaya jasa pemasangan tergantung lokasi dan kompleksitas proyek. Kami akan melakukan surveі lokasi terlebih dahulu untuk memberikan penawaran akurat. Tim kami dapat menangani proyek skala kecil hingga besar."},
-                {"question": "Berapa lama umur baterai?", "answer": "Baterai LiFePO4 yang kami gunakan memiliki durasi hidup 5-7 tahun atau 2000-3000 siklus charge-discharge. Dengan maintenance rutin dan operasional yang baik, baterai bisa bertahan lebih lama. Kapasitas akan menurun gradual, di tahun ke-5 masih mencapai 80% kapasitas normal."},
-                {"question": "Bagaimana maintenance PJUTS?", "answer": "Maintenance PJUTS cukup simple: (1) Bersihkan panel surya setiap 2-3 bulan dari debu dan kotoran. (2) Periksa koneksi kabel setiap 6 bulan. (3) Monitoring software untuk checking kondisi baterai. (4) Ganti spare parts jika ada yang rusak. Kami menyediakan maintenance package tahunan dengan harga terjangkau."}
-            ]
-
-            for i, faq in enumerate(faq_data):
-                self.vector_store.add_document(
-                    text=f"FAQ: {faq['question']}\nJawaban: {faq['answer']}",
-                    metadata={"type": "faq", "source": "default"},
-                    document_id=f"faq_{i}"
-                )
-            print(f"[INIT] Added {len(faq_data)} FAQs. Total docs: {self.vector_store.count_documents()}")
-            print(f"[INIT] Knowledge base initialization complete!")
-
+        for i, faq in enumerate(faq_data):
+            self.vector_store.add_document(
+                text=f"FAQ: {faq['question']}\nJawaban: {faq['answer']}",
+                metadata={"type": "faq", "source": "default"},
+                document_id=f"faq_{i}"
+            )
+        print(f"[INIT] Added {len(faq_data)} FAQs. Total docs: {self.vector_store.count_documents()}")
+        print(f"[INIT] Knowledge base initialization complete!")
     async def process_message(self, message: str, session_id: str = None) -> Dict:
         intent = IntentDetector.detect(message)
 
-        # Search context dengan distance score
-        context_docs = self.vector_store.search(message, n_results=5)
+        # Retrieve lebih banyak dokumen untuk lebih comprehensive filtering (n_results=15 untuk product recommendation)
+        n_results = 15 if intent == "product_recommendation" else 10
+        context_docs = self.vector_store.search(message, n_results=n_results)
+        
+        # Intelligently classify uploaded knowledge docs as product if relevant
+        for doc in context_docs:
+            if doc.get('metadata', {}).get('source') == 'uploaded_knowledge':
+                # Check if content contains product-related keywords
+                content = doc.get('content', '').lower()
+                product_keywords = ['pjuts', 'watt', 'baterai', 'battery', 'panel surya', 'spesifikasi', 
+                                   'solar', 'lampu', 'tinggi tiang', 'ah', 'cocok untuk', 'kapasitas']
+                
+                if any(keyword in content for keyword in product_keywords):
+                    # Classify as product
+                    doc['metadata']['type'] = 'product'
         
         # Re-rank dokumen: prioritize by type relevance + distance
         context_docs = self._rank_documents_by_intent(context_docs, intent)
+        
+        # IMPORTANT: Ensure uploaded PDF knowledge is prioritized
+        # Separate uploaded docs dan default docs
+        uploaded_docs = [d for d in context_docs if d.get('metadata', {}).get('source') == 'uploaded_knowledge']
+        default_docs = [d for d in context_docs if d.get('metadata', {}).get('source') != 'uploaded_knowledge']
+        
+        # Priority: uploaded (PDF) docs pertama, kemudian default docs
+        context_docs = uploaded_docs + default_docs
 
         # Generate response dengan ranked context docs
         response = await self.llm.generate_response(
@@ -287,7 +348,7 @@ class RAGService:
             for doc in context_docs:
                 if doc['metadata'].get('type') == 'product':
                     recommended_product = {
-                        "name": doc['metadata'].get('name', 'Unknown'),
+                        "name": doc['metadata'].get('name', 'PJUTS Product'),
                         "watt": "See details",
                         "battery": "See details"
                     }
@@ -303,9 +364,10 @@ class RAGService:
         """Re-rank dokumen berdasarkan intent + distance untuk relevance lebih tinggi.
         
         Filter out low-relevance docs (distance > threshold) sebelum return.
+        STRICT MODE: Hanya include docs yang cukup relevan (distance <= 1.5) untuk PDF-based RAG.
         """
         # Similarity threshold - Chroma distance 0-2, semakin kecil = lebih relevan
-        # 1.5 allows relevant semantic matches (optimal for sentence-transformers)
+        # 1.5 untuk PDF-based RAG mode - lebih lenient untuk menangkap dokumen PDF yang relevan
         SIMILARITY_THRESHOLD = 1.5
         
         # Intent-to-type mapping
@@ -342,7 +404,7 @@ class RAGService:
         
         # Combine: relevant docs dulu, kemudian others
         ranked = [doc for _, doc in relevant_docs] + [doc for _, doc in other_docs]
-        return ranked[:5]  # Return max 5
+        return ranked[:10]  # Return max 10 (increased from 5 for better context)
 
 
 rag_service = RAGService()

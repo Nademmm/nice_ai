@@ -24,12 +24,18 @@ class LLMService:
         context_docs: Optional[List[Dict]] = None,
         user_input: str = ""
     ) -> str:
-        if self.use_ai_model and self.provider == "gemini" and settings.GOOGLE_API_KEY:
-            return await self._generate_gemini(prompt, system_instruction)
-        elif self.use_ai_model and settings.OPENAI_API_KEY:
-            return await self._generate_openai(prompt, system_instruction)
-        else:
-            return self._generate_rule_based_response(intent, context_docs or [], user_input)
+        # PRIORITAS UTAMA: Selalu gunakan knowledge base dari PDF/uploaded documents
+        # Hanya gunakan AI model jika ada context yang cukup dari knowledge base
+        if context_docs and len(context_docs) > 0:
+            # Cek apakah ada uploaded knowledge dari PDF
+            has_uploaded_knowledge = any(d.get('metadata', {}).get('source') == 'uploaded_knowledge' for d in context_docs)
+            
+            # Jika ada PDF atau context docs yang relevan, gunakan rule-based response builder
+            # Ini memastikan jawaban HANYA dari knowledge base, bukan dari LLM general knowledge
+            return self._generate_rule_based_response(intent, context_docs, user_input)
+        
+        # Jika tidak ada context docs, gunakan rule-based dengan empty docs
+        return self._generate_rule_based_response(intent, context_docs or [], user_input)
 
     async def _generate_gemini(
         self,
