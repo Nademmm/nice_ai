@@ -17,7 +17,7 @@ $uvicornArgs = @(
     '-m', 'uvicorn',
     'app.main:app',
     '--app-dir', $backendDir,
-    '--host', '127.0.0.1',
+    '--host', '0.0.0.0',
     '--port', $Port
 )
 

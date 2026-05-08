@@ -80,19 +80,26 @@ class IntentDetector:
     INTENT_KEYWORDS = {
         "company_info": [
             ("tentang perusahaan", 5), ("profil perusahaan", 5), ("visi", 4), ("misi", 4),
-            ("siapa itu", 4), ("siapa kalian", 4), ("alamat", 3), ("kontak", 3), 
-            ("Indonesia Cerdas", 5), ("tentang niscahya", 5)
+            ("siapa itu", 4), ("siapa kalian", 4), ("alamat", 5), ("kontak", 4),
+            ("lokasi", 5), ("letak", 5), ("dimana", 5), ("mana perusahaan", 5),
+            ("jam operasional", 5), ("jam kerja", 5), ("operasional", 4),
+            ("kantor", 4), ("office", 3), ("perusahaan", 3), ("Indonesia Cerdas", 5), ("tentang niscahya", 5)
         ],
         "product_recommendation": [
             ("butuh", 4), ("rekomendasi produk", 5), ("lampu jalan", 5), ("PJUTS", 5),
             ("tenaga surya", 4), ("cocok untuk", 4), ("area apa", 4), ("area mana", 4),
-            ("sesuai", 3), ("mana produk", 4), ("produk mana", 4)
+            ("sesuai", 3), ("mana produk", 4), ("produk mana", 4), ("rekomendasi", 5)
         ],
         "faq": [
             ("harga", 5), ("berapa harga", 5), ("harga produk", 5), ("berapa", 4),
             ("garansi", 5), ("ada garansi", 4), ("kirim", 4), ("pengiriman", 4),
             ("pemasangan", 4), ("instalasi", 4), ("maintenance", 4), ("umur baterai", 5),
             ("berapa lama", 3), ("bagaimana", 3), ("apa saja", 3)
+        ],
+        "general": [
+            ("apa itu", 5), ("pengertian", 4), ("definisi", 4), ("jelaskan", 4),
+            ("penjelasan", 4), ("cara kerja", 4), ("bagaimana cara", 4), ("apa saja", 3),
+            ("tentang", 2), ("mengenai", 2)
         ],
         "lead": [
             ("tertarik", 5), ("pesan", 4), ("order", 4), ("hubungi", 4), ("WhatsApp", 4),
@@ -104,6 +111,11 @@ class IntentDetector:
     def detect(cls, message: str) -> str:
         """Detect intent dengan weighted scoring untuk akurasi lebih baik."""
         message_lower = message.lower()
+
+        # Detect "lampu [brand]" pattern -> product_recommendation
+        if cls._is_product_brand_query(message_lower):
+            return "product_recommendation"
+
         scores = {}
 
         for intent, keywords in cls.INTENT_KEYWORDS.items():
@@ -127,6 +139,31 @@ class IntentDetector:
         
         return best_intent
 
+    @classmethod
+    def _is_product_brand_query(cls, message_lower: str) -> bool:
+        """Detect jika user menanyakan produk dengan format 'lampu [merk]'.
+        User bisa ketik lowercase tanpa capslock.
+        """
+        import re
+        # Daftar brand/series produk yang dikenali
+        known_brands = [
+            'all in one', 'aio', 'king light', 'crossbow',
+            'nc-pt', 'nc-st', 'nc-p', 'gw8860', 'hf-rl',
+            'by7', 'bct-tt', 'sdlb', 'wl-302',
+            'pjuts', 'pju', 'solar', 'tenaga surya',
+        ]
+        # Pattern: "lampu [brand/keyword]"
+        if re.search(r'\blampu\b', message_lower):
+            # Cek apakah ada brand yang dikenal
+            for brand in known_brands:
+                if brand in message_lower:
+                    return True
+            # Jika ada "lampu" + kata lain (bukan hanya "lampu" saja)
+            after_lampu = message_lower.split('lampu', 1)[-1].strip()
+            if after_lampu and len(after_lampu) > 2:
+                return True
+        return False
+
 
 class RAGService:
     def __init__(self):
@@ -135,15 +172,24 @@ class RAGService:
 
     def load_pdf_from_uploads(self):
         """Load semua PDF dari folder uploads dan add ke vector store."""
-        uploads_dir = Path("./uploads")
+        uploads_dir = Path(__file__).parent.parent.parent / "uploads"  # backend/uploads/
         if not uploads_dir.exists():
-            print("[INIT] No uploads directory found")
+            print(f"[INIT] No uploads directory found at {uploads_dir}")
             return 0
         
         pdf_count = 0
         for pdf_file in uploads_dir.glob("*.pdf"):
             try:
                 print(f"[INIT] Loading PDF: {pdf_file.name}")
+                # Determine category based on filename
+                filename_lower = pdf_file.name.lower()
+                if "cv nice" in filename_lower or "nice indonesia" in filename_lower:
+                    category = "company_profile"
+                elif "spesifikasi" in filename_lower or "spec" in filename_lower:
+                    category = "spesifikasi"
+                else:
+                    category = "deskripsi"
+                
                 with open(pdf_file, 'rb') as f:
                     pdf_reader = PyPDF2.PdfReader(f)
                     # Simpan setiap halaman sebagai dokumen terpisah
@@ -157,12 +203,13 @@ class RAGService:
                                     "type": "uploaded_knowledge",
                                     "source": pdf_file.name,
                                     "file_type": "pdf",
-                                    "page": page_num + 1
+                                    "page": page_num + 1,
+                                    "category": category
                                 },
                                 document_id=f"pdf_{pdf_file.stem.replace(' ', '_')}_page_{page_num + 1}"
                             )
                             pdf_count += 1
-                    print(f"[INIT] Loaded {pdf_file.name} ({len(pdf_reader.pages)} pages)")
+                    print(f"[INIT] Loaded {pdf_file.name} as {category} ({len(pdf_reader.pages)} pages)")
             except Exception as e:
                 print(f"[INIT] Error loading {pdf_file.name}: {str(e)}")
         
@@ -175,6 +222,13 @@ class RAGService:
         
         if pdf_count > 0:
             print(f"[INIT] Loaded {pdf_count} PDF files from uploads folder!")
+            # Always load COMPANY_INFO as fallback (CV NICE INDONESIA.pdf is image-based)
+            self.vector_store.add_document(
+                text=COMPANY_INFO,
+                metadata={"type": "company_info", "source": "default"},
+                document_id="company_info_default"
+            )
+            print(f"[INIT] Added company info fallback.")
             print(f"[INIT] Total docs in vector store: {self.vector_store.count_documents()}")
             return
         
@@ -299,7 +353,7 @@ class RAGService:
 
     def _rank_documents_by_intent(self, docs: List[Dict], intent: str) -> List[Dict]:
         """Re-rank dokumen berdasarkan intent + distance untuk relevance lebih tinggi.
-        Prioritize uploaded knowledge dari PDF.
+        Prioritize uploaded knowledge dari PDF dengan kategori spesifik.
         
         Filter out low-relevance docs (distance > threshold) sebelum return.
         """
@@ -320,12 +374,28 @@ class RAGService:
             "general": ["product", "company_info", "faq", "uploaded_knowledge"]
         }
 
+        # Intent-to-category mapping for uploaded knowledge
+        intent_categories = {
+            "product_recommendation": ["spesifikasi", "deskripsi"],
+            "faq": ["deskripsi"],
+            "general": ["deskripsi"],
+            "company_info": ["company_profile"],
+            "lead": ["spesifikasi", "deskripsi"]
+        }
+
         target_types = intent_types.get(intent, [])
+        target_categories = intent_categories.get(intent, [])
         
-        # Process uploaded docs first with lenient filtering
+        # Process uploaded docs first with category filtering
         ranked_uploaded = []
         for doc in uploaded_docs:
             distance = doc.get("distance", 999)
+            category = doc.get('metadata', {}).get('category', '')
+            
+            # Filter by category if specified for intent
+            if target_categories and category not in target_categories:
+                continue
+                
             # Less strict filtering for uploaded knowledge
             if distance <= SIMILARITY_THRESHOLD + 0.4:  # More lenient
                 ranked_uploaded.append((0, distance, doc))  # Priority 0 = highest

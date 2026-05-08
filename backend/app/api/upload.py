@@ -76,12 +76,20 @@ async def upload_knowledge_base(files: List[UploadFile] = File(...)):
             continue
 
         if text.strip():
+            # Determine category based on filename
+            filename_lower = file.filename.lower()
+            if "spesifikasi" in filename_lower or "spec" in filename_lower:
+                category = "spesifikasi"
+            else:
+                category = "deskripsi"
+            
             vector_store.add_document(
                 text=text,
                 metadata={
                     "type": "uploaded_knowledge",
                     "source": file.filename,
-                    "file_type": filename.split('.')[-1]
+                    "file_type": filename.split('.')[-1],
+                    "category": category
                 }
             )
             total_added += 1

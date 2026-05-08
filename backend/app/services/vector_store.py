@@ -15,6 +15,7 @@ class VectorStoreService:
             print(f"[VectorStore] Loading embedding model: {settings.EMBEDDING_MODEL}")
             self.embedding_model = SentenceTransformer(
                 settings.EMBEDDING_MODEL,
+                device="cpu",
                 trust_remote_code=True
             )
             print("[VectorStore] Embedding model loaded successfully")
